@@ -4,8 +4,41 @@ import os
 import asyncio
 import json
 
+# --- Persistencia de la ruta de descarga ---
+# En Android/móvil Flet define FLET_APP_STORAGE_DATA (carpeta escribible);
+# en escritorio se usa la carpeta del propio script.
+BASE_DIR = os.environ.get("FLET_APP_STORAGE_DATA") or os.path.dirname(os.path.abspath(__file__))
+DATA_FILE = os.path.join(BASE_DIR, "data.json")
 
-async def main(page: ft.Page) -> None:        
+
+def load_saved_path() -> str:
+    """Devuelve la ruta guardada si existe y la carpeta sigue existiendo."""
+    try:
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            saved = json.load(f).get("path", "")
+        if saved and os.path.isdir(saved):
+            return saved
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+    return os.getcwd()
+
+
+def save_path(path: str) -> None:
+    """Guarda la ruta en data.json conservando otras claves."""
+    try:
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            datos = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        datos = {}
+    datos["path"] = str(path)
+    try:
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(datos, f, ensure_ascii=False, indent=4)
+    except OSError as ex:
+        print(f"No se pudo guardar la ruta: {ex}")
+
+
+async def main(page: ft.Page) -> None:
     page.title = "TerminalYT Downloader"
     page.theme_mode = ft.ThemeMode.DARK
     page.bgcolor = "#0a0a0a"
@@ -19,12 +52,17 @@ async def main(page: ft.Page) -> None:
 
     page.theme = ft.Theme(font_family=FONT_FAMILY)
 
-    # Ruta de descarga actual
-    current_download_path = os.getcwd()
+    # Ruta de descarga actual (cargada desde data.json si existe)
+    current_download_path = load_saved_path()
 
     # FilePicker: en Flet 0.70+ es un servicio, no un control visual
     file_picker = ft.FilePicker()
-    page.services.append(file_picker)
+    if hasattr(page, 'services'):
+        page.services.append(file_picker)
+    elif hasattr(page, 'overlay'):
+        page.overlay.append(file_picker)
+    else:
+        page.add(file_picker)
 
     def term_button_style() -> ft.ButtonStyle:
         return ft.ButtonStyle(
@@ -35,18 +73,20 @@ async def main(page: ft.Page) -> None:
 
     def show_snack(message: str, color=GREEN_TERM) -> None:
         """Muestra un SnackBar temático (se cierra solo)."""
-        page.show_dialog(
-            ft.SnackBar(
-                content=ft.Text(message, color=color, font_family=FONT_FAMILY),
-                bgcolor=DARK_GREY,
-                behavior=ft.SnackBarBehavior.FLOATING,
-                duration=4000,
-            )
+        snack = ft.SnackBar(
+            content=ft.Text(message, color=color, font_family=FONT_FAMILY),
+            bgcolor=DARK_GREY,
+            behavior=ft.SnackBarBehavior.FLOATING,
+            duration=4000,
         )
+        if hasattr(page, 'open'):
+            page.open(snack)
+        else:
+            page.show_dialog(snack)
 
     # Título principal
     header = ft.Text(
-        ">_ YT-DLP TERMINAL INTERFACE v1.1",
+        ">_ YT DOWNLOADER INTERFACE v1.1",
         size=24,
         weight=ft.FontWeight.BOLD,
         color=GREEN_TERM,
@@ -78,9 +118,17 @@ async def main(page: ft.Page) -> None:
 
     async def set_path(e):
         nonlocal current_download_path
-        ruta_seleccionada = await file_picker.get_directory_path()
+        try:
+            if hasattr(file_picker, 'get_directory_path_async'):
+                ruta_seleccionada = await file_picker.get_directory_path_async()
+            else:
+                ruta_seleccionada = await file_picker.get_directory_path()
+        except Exception:
+            ruta_seleccionada = None
+
         if ruta_seleccionada:
             current_download_path = ruta_seleccionada
+            save_path(current_download_path)  # <-- persistencia
             selected_dir_text.value = f"[DIR] {current_download_path}"
             page.update()
 
@@ -108,15 +156,12 @@ async def main(page: ft.Page) -> None:
     )
 
     async def download_audio(url: str, title: str, button: ft.OutlinedButton) -> None:
-        # Todo el código de UI corre en el event loop de Flet (sin hilos propios);
-        # solo la descarga bloqueante va a un hilo con asyncio.to_thread.
         download_dir = current_download_path
 
         button.disabled = True
-        button.content = "[DOWNLOADING...]"
+        button.text = "[DOWNLOADING...]"
         button.icon = None
 
-        # Diálogo modal nuevo en cada descarga (evita reutilizar uno ya "abierto")
         status_dialog = ft.AlertDialog(
             modal=True,
             bgcolor=DARK_GREY,
@@ -136,7 +181,11 @@ async def main(page: ft.Page) -> None:
             ),
             content_padding=40,
         )
-        page.show_dialog(status_dialog)
+        if hasattr(page, 'open'):
+            page.open(status_dialog)
+        else:
+            page.show_dialog(status_dialog)
+
         page.update()
 
         def blocking_download() -> None:
@@ -162,16 +211,19 @@ async def main(page: ft.Page) -> None:
             error = ex
             print(f"Error downloading {url}: {ex}")
 
-        # Cerramos el diálogo de progreso y avisamos con el SnackBar
-        page.pop_dialog()
+        if hasattr(page, 'close'):
+            page.close(status_dialog)
+        else:
+            page.pop_dialog()
+
         button.disabled = False
 
         if error is None:
-            button.content = "[DOWNLOADED]"
+            button.text = "[DOWNLOADED]"
             button.icon = ft.Icons.CHECK_CIRCLE_OUTLINE
             show_snack(f"[SUCCESS] '{title}' instalado en {download_dir}")
         else:
-            button.content = "[ERROR]"
+            button.text = "[ERROR]"
             show_snack(f"[ERROR] {error}", ft.Colors.RED_ACCENT)
 
         page.update()
@@ -195,8 +247,11 @@ async def main(page: ft.Page) -> None:
             style=ft.ButtonStyle(color=ft.Colors.BLUE_400),
         )
 
+        # Border compatible
+        b_side = ft.border.all(1, GREEN_TERM) if hasattr(ft.border, "all") else ft.BorderSide(1, GREEN_TERM)
+
         return ft.Container(
-            border=ft.Border.all(1, GREEN_TERM),
+            border=b_side,
             border_radius=5,
             bgcolor=DARK_GREY,
             padding=15,
@@ -237,16 +292,40 @@ async def main(page: ft.Page) -> None:
 
             def blocking_search():
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    return ydl.extract_info(f"ytsearch5:{query}", download=False)
+                    # Buscamos 10 por si los primeros fuesen canales/playlists
+                    return ydl.extract_info(f"ytsearch10:{query}", download=False)
 
             info = await asyncio.to_thread(blocking_search)
             entries = info.get("entries", [])
 
-            for index, entry in enumerate(entries):
+            valid_count = 0
+            for entry in entries:
+                # Filtrar canales y playlists
+                url = entry.get("url", "")
+
+                # Ignorar canales
+                if "youtube.com/channel/" in url or "youtube.com/@" in url or "youtube.com/user/" in url or "youtube.com/c/" in url:
+                    continue
+                # Ignorar playlists (suelen llevar &list= o /playlist?list=)
+                if "&list=" in url or "playlist?list=" in url:
+                    continue
+                # Asegurar que tenga duración para verificar que es un vídeo
+                if entry.get("duration") is None:
+                    continue
+
                 title = entry.get("title", "Sin_titulo")
                 uploader = entry.get("uploader", "UNKNOWN_USER")
-                url = entry.get("url", "")
-                results_column.controls.append(build_card(index, title, uploader, url))
+
+                results_column.controls.append(build_card(valid_count, title, uploader, url))
+                valid_count += 1
+
+                if valid_count >= 5:
+                    break
+
+            if valid_count == 0:
+                results_column.controls.append(
+                    ft.Text("[INFO] NO_VIDEOS_FOUND", color=ft.Colors.YELLOW_400, font_family=FONT_FAMILY)
+                )
 
         except Exception as ex:
             results_column.controls.append(
