@@ -5,11 +5,7 @@ import asyncio
 import json
 
 
-async def main(page: ft.Page) -> None:
-    if not os.path.exists("data.json"):
-        with open("mi_archivo.txt", "w", encoding="utf-8") as f:
-            f.write("Hola mundo, esta es la primera línea.\n")
-            
+async def main(page: ft.Page) -> None:        
     page.title = "TerminalYT Downloader"
     page.theme_mode = ft.ThemeMode.DARK
     page.bgcolor = "#0a0a0a"
@@ -24,12 +20,7 @@ async def main(page: ft.Page) -> None:
     page.theme = ft.Theme(font_family=FONT_FAMILY)
 
     # Ruta de descarga actual
-    if os.path.exists("data.json"):
-        with open("data_json", "r", encoding="utf-8") as f:
-            data = json.load(f)
-        current_download_path = data["path"]
-    else:
-        current_download_path = os.getcwd()
+    current_download_path = os.getcwd()
 
     # FilePicker: en Flet 0.70+ es un servicio, no un control visual
     file_picker = ft.FilePicker()
@@ -91,9 +82,6 @@ async def main(page: ft.Page) -> None:
         if ruta_seleccionada:
             current_download_path = ruta_seleccionada
             selected_dir_text.value = f"[DIR] {current_download_path}"
-            data = {"path": current_download_path}
-            with open("data.json", "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=4)
             page.update()
 
     dir_button = ft.OutlinedButton(
